@@ -7,8 +7,8 @@ import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 
 from src.data_loader import load_ratings, load_movies, get_movie_genre_string, load_links
-from src.content_based import build_content_model, get_content_recommendations
-from src.collaborative import build_collab_model, get_similar_users, get_collab_recommendations
+from src.content_based import build_content_model
+from src.collaborative import build_collab_model, get_similar_users
 from src.hybrid import get_hybrid_recommendations
 from src.evaluate import evaluate_rmse, evaluate_precision_recall_at_k
 
@@ -433,7 +433,7 @@ with tab1:
                 user_id=user_id, liked_movie_ids=liked_movie_ids,
                 model=model, trainset=trainset, all_movie_ids=all_movie_ids,
                 similarity_matrix=sim_matrix, id_to_index=id_to_index,
-                movies_df=movies_df, top_n=300, alpha=alpha
+                movies_df=movies_df, top_n=None, alpha=alpha  # filter first, cut to top_n below
             )
             recs = pd.merge(recs, links, on="movie_id", how="left")
             recs = pd.merge(recs, movies[["movie_id", "genres"]], on="movie_id", how="left")
@@ -460,32 +460,42 @@ with tab1:
 
         # Save to history — store only what we need to display, not the full df
         st.session_state["history"].insert(0, {
-            "seeds":      selected_titles,
+            "seeds":      list(selected_titles),  # copy: the live list is mutated on remove
             "user_id":    user_id,
             "top_titles": recs["title"].head(3).tolist() if "title" in recs.columns else [],
         })
         if len(st.session_state["history"]) > 10:
             st.session_state["history"] = st.session_state["history"][:10]
 
+        # Persist the run: widget clicks (Save) rerun the script, and without this
+        # the cards — and the clicked button — vanish before the click is handled.
+        st.session_state["last_run"] = dict(
+            recs=recs, alpha=alpha, surprise=surprise_mode,
+            seeds=liked_movie_ids, user_id=user_id,
+        )
+
+    run = st.session_state.get("last_run")
+    if run:
+        recs = run["recs"]
         if recs.empty:
             st.warning("No matches found. Try removing genre filters or turning off Surprise Me.")
         else:
-            st.subheader(f"🏆 Top {len(recs)} Picks for User {user_id}")
+            st.subheader(f"🏆 Top {len(recs)} Picks for User {run['user_id']}")
 
             # ── Legend ────────────────────────────────────────────────────────
             st.markdown(clean_html(f"""
             <div class="legend-box">
               <strong>How scores work:</strong><br>
               <span class="dot dot-hybrid"></span><strong>Overall Match</strong> — Weighted blend of both signals.<br>
-              <span class="dot dot-collab"></span><strong>People Like You</strong> — How much similar users enjoyed this ({int(alpha*100)}% weight).<br>
-              <span class="dot dot-content"></span><strong>Genre Match</strong> — How similar the genres are to your seeds ({int((1-alpha)*100)}% weight).
+              <span class="dot dot-collab"></span><strong>People Like You</strong> — How much similar users enjoyed this ({int(run['alpha']*100)}% weight).<br>
+              <span class="dot dot-content"></span><strong>Genre Match</strong> — How similar the genres are to your seeds ({int((1-run['alpha'])*100)}% weight).
             </div>"""), unsafe_allow_html=True)
 
             # ── Cards ─────────────────────────────────────────────────────────
-            seed_genres_set = get_seed_genres(liked_movie_ids, movies) if surprise_mode else set()
+            seed_genres_set = get_seed_genres(run["seeds"], movies) if run["surprise"] else set()
             for rank, (_, row) in enumerate(recs.iterrows()):
-                outside = surprise_mode and is_outside_comfort(row.get("genres", ""), seed_genres_set)
-                render_rec_card(row, rank, liked_movie_ids, show_surprise_badge=outside)
+                outside = run["surprise"] and is_outside_comfort(row.get("genres", ""), seed_genres_set)
+                render_rec_card(row, rank, run["seeds"], show_surprise_badge=outside)
 
             # ── Genre donut ───────────────────────────────────────────────────
             with st.expander("📊 Genre breakdown of these results"):
@@ -509,7 +519,7 @@ with tab1:
             st.download_button(
                 "⬇️ Download recommendations as CSV",
                 data=csv_buf.getvalue(),
-                file_name=f"cinematch_user{user_id}_recs.csv",
+                file_name=f"cinematch_user{run['user_id']}_recs.csv",
                 mime="text/csv"
             )
 
@@ -929,39 +939,10 @@ with tab4:
                 # This avoids 11 × O(n_unrated) model.predict calls — scales to
                 # large datasets (e.g. MovieLens 1M) without modification.
                 with st.spinner("Computing scores (1× collab + 1× content pass)…"):
-                    # Collab: one full prediction pass for the selected user
-                    collab_df = get_collab_recommendations(
-                        user_id, model, trainset, all_movie_ids, movies_df, top_n=300
-                    )
-
-                    # Content: average similarity across all seed movies
-                    c_frames = [
-                        get_content_recommendations(sid, sim_matrix, id_to_index, movies_df,
-                                                    top_n=300)[["movie_id", "content_score"]]
-                        for sid in sweep_ids
-                    ]
-                    content_df = (
-                        pd.concat(c_frames)
-                          .groupby("movie_id", as_index=False)["content_score"].mean()
-                        if c_frames else pd.DataFrame(columns=["movie_id", "content_score"])
-                    )
-
-                    # Merge and normalise once
-                    merged = pd.merge(
-                        collab_df[["movie_id", "collab_score"]], content_df,
-                        on="movie_id", how="outer"
-                    )
-                    merged = pd.merge(merged, movies_df[["movie_id", "title"]],
-                                      on="movie_id", how="left")
-                    merged["collab_score"]  = merged["collab_score"].fillna(0)
-                    merged["content_score"] = merged["content_score"].fillna(0)
-
-                    def _norm(s):
-                        mn, mx = s.min(), s.max()
-                        return (s - mn) / (mx - mn) if mx != mn else pd.Series(0.0, index=s.index)
-
-                    merged["cn"] = _norm(merged["collab_score"])
-                    merged["tn"] = _norm(merged["content_score"])
+                    merged = get_hybrid_recommendations(
+                        user_id, sweep_ids, model, trainset, all_movie_ids,
+                        sim_matrix, id_to_index, movies_df, top_n=None
+                    ).rename(columns={"collab_norm": "cn", "content_norm": "tn"})
 
                 # ── Sweep: pure numpy reweighting, no model calls ────────────────
                 progress = st.progress(0, text="Building sweep table…")

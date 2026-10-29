@@ -30,10 +30,9 @@ def get_content_recommendations(movie_id, similarity_matrix, id_to_index, movies
         return pd.DataFrame()
 
     idx = id_to_index[movie_id]
-    sim_scores = list(enumerate(similarity_matrix[idx]))
-
-    # Sort by similarity score descending, skip index 0 (itself)
-    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)[1:top_n+1]
+    # Drop the movie itself explicitly — with genre ties it isn't guaranteed to sort first
+    sim_scores = [(i, s) for i, s in enumerate(similarity_matrix[idx]) if i != idx]
+    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)[:top_n]
 
     movie_indices = [i[0] for i in sim_scores]
     scores = [i[1] for i in sim_scores]

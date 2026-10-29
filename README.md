@@ -36,7 +36,7 @@ hybrid_score = α × collab_norm + (1 − α) × content_norm
 │   ├── hybrid.py            # Weighted hybrid fusion
 │   └── evaluate.py          # 5-fold cross-validation: RMSE, Precision@K, Recall@K
 └── data/
-    └── ml-latest-small/     # MovieLens dataset (not committed — download separately)
+    └── ml-32m-subset/       # built by make_ml32m_subset.py (not committed)
         ├── movies.csv
         ├── ratings.csv
         ├── links.csv
@@ -63,11 +63,14 @@ pip install -r requirements.txt
 
 ### 2. Download the dataset
 
-Download [MovieLens Latest Small](https://grouplens.org/datasets/movielens/latest/) and place it at:
+The app defaults to a recent subset of [MovieLens 32M](https://grouplens.org/datasets/movielens/) (ratings up to Oct 2023):
 
+```bash
+curl -O https://files.grouplens.org/datasets/movielens/ml-32m.zip   # 239 MB, unzip it
+python make_ml32m_subset.py ml-32m data/ml-32m-subset             # 10,000 users active since 2018, 9,000 movies
 ```
-data/ml-latest-small/
-```
+
+To use the older 2018 [MovieLens Latest Small](https://grouplens.org/datasets/movielens/latest/) instead, unzip it to `data/ml-latest-small/` and set `CINEMATCH_DATA=data/ml-latest-small`.
 
 ### 3. Run the app
 
@@ -117,14 +120,14 @@ See `requirements.txt`. Key libraries:
 
 ## 🔮 Roadmap / known limits
 
-> **Verified metrics — ml-latest-small (100,836 ratings, 5-fold CV)**
+> **Verified metrics — ml-32m subset (2,378,597 ratings, 10,000 users; SVD 100 factors; RMSE 5-fold CV, P/R@10 on an 80/20 split, 4★ threshold)**
 > | Metric | Value |
 > |--------|-------|
-> | RMSE | **0.8707** |
-> | Precision@10 | **55.8%** |
-> | Recall@10 | **66.2%** |
+> | RMSE | **0.7452** |
+> | Precision@10 | **77.3%** |
+> | Recall@10 | **59.3%** |
 
-- Dataset is **MovieLens Latest Small** (~9,000 movies, 100K ratings). Upgrade to `ml-25m` for production quality; the α sweep is already optimised to scale (1× collab pass, not 11×).
+- Dataset is a **MovieLens 32M subset** (9,000 movies, 2.4M ratings). The full set needs a sparse content model (the dense similarity matrix won't fit); the α sweep is already optimised to scale (1× collab pass, not 11×).
 - Watchlist is **session-only** — no persistence between browser refreshes.
 - IMDb links depend on `links.csv` being up to date.
 

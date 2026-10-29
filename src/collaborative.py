@@ -1,6 +1,7 @@
 from surprise import SVD, Dataset, Reader
 from surprise.model_selection import cross_validate
 from sklearn.metrics.pairwise import cosine_similarity
+from scipy.sparse import csr_matrix
 import pandas as pd
 import numpy as np
 
@@ -9,14 +10,14 @@ def build_collab_model(ratings_df):
     Trains SVD on the full ratings dataframe.
     Returns the trained model and the full trainset.
     """
-    reader = Reader(rating_scale=(1, 5))
+    reader = Reader(rating_scale=(0.5, 5))
     data = Dataset.load_from_df(
         ratings_df[["user_id", "movie_id", "rating"]],
         reader
     )
 
     trainset = data.build_full_trainset()
-    model = SVD(n_factors=50, n_epochs=20, random_state=42)
+    model = SVD(n_factors=100, n_epochs=30, lr_all=0.007, reg_all=0.05, random_state=42)
     model.fit(trainset)
 
     return model, trainset
@@ -57,17 +58,16 @@ def get_similar_users(user_id, ratings_df, movies_df, top_n=5, loved_threshold=4
 
     Returns a list of dicts: [{user_id, similarity, loved_movies: [title, ...]}]
     """
-    # Build user-movie pivot (fill missing with 0)
-    pivot = ratings_df.pivot_table(
-        index="user_id", columns="movie_id", values="rating", fill_value=0
-    )
+    # Sparse user-movie matrix (missing = 0); a dense pivot is ~700 MB at 10k users
+    users  = ratings_df["user_id"].astype("category")
+    movies = ratings_df["movie_id"].astype("category")
+    all_ids = users.cat.categories.tolist()
 
-    if user_id not in pivot.index:
+    if user_id not in all_ids:
         return []
 
-    target_vec = pivot.loc[[user_id]].values          # shape (1, n_movies)
-    all_vecs   = pivot.values                          # shape (n_users, n_movies)
-    all_ids    = pivot.index.tolist()
+    all_vecs = csr_matrix((ratings_df["rating"].values, (users.cat.codes, movies.cat.codes)))
+    target_vec = all_vecs[all_ids.index(user_id)]
 
     sims = cosine_similarity(target_vec, all_vecs)[0]  # shape (n_users,)
 
